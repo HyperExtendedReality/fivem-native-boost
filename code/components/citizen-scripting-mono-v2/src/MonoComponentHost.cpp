@@ -49,9 +49,9 @@ void MonoComponentHost::Initialize()
 	Method::AddInternalCall("CitizenFX.Core.ScriptInterface::CFree", free);
 	Method::AddInternalCall("CitizenFX.Core.ScriptInterface::Print", MonoComponentHost::Print);
 
-	//Method::AddInternalCall("CitizenFX.Core.ScriptInterface::GetMemoryUsage", MonoComponentHost::GetMemoryUsage);
-	//Method::AddInternalCall("CitizenFX.Core.ScriptInterface::WalkStackBoundary", MonoComponentHostShared::WalkStackBoundary);
-	//Method::AddInternalCall("CitizenFX.Core.ScriptInterface::SnapshotStackBoundary", MonoComponentHostShared::SnapshotStackBoundary);
+	// Method::AddInternalCall("CitizenFX.Core.ScriptInterface::GetMemoryUsage", MonoComponentHost::GetMemoryUsage);
+	// Method::AddInternalCall("CitizenFX.Core.ScriptInterface::WalkStackBoundary", MonoComponentHostShared::WalkStackBoundary);
+	// Method::AddInternalCall("CitizenFX.Core.ScriptInterface::SnapshotStackBoundary", MonoComponentHostShared::SnapshotStackBoundary);
 
 	// profiling
 	Method::AddInternalCall("CitizenFX.Core.ScriptInterface::ProfilerIsRecording", MonoComponentHost::ProfilerIsRecording);
@@ -82,7 +82,7 @@ void MonoComponentHost::Initialize()
 	InitializeNativeWrapper(platformFolder);
 
 	// all functions required for this host to interface with C#, may also include vice-versa functions
-	const char* requiredMethods[] {
+	const char* requiredMethods[]{
 		"CitizenFX.Core.ScriptInterface:Initialize",
 		"CitizenFX.Core.ScriptInterface:LoadAssembly",
 		"CitizenFX.Core.ScriptInterface:Tick",
@@ -108,35 +108,34 @@ void MonoComponentHost::Initialize()
 	// BACK_TO_PREV_DOMAIN
 }
 
-void MonoComponentHost::InitializeNativeWrapper(const std::string& platformFolder)
-{
+void MonoComponentHost::InitializeNativeWrapper(const std::string& platformFolder){
 #ifndef IS_FXSERVER
 	// native implementation
 	{
-		std::string nativeAssemblyPath = platformFolder + CITIZENFX_GAME_NATIVE "Impl.dll";
-		auto nativeWrappersAssembly = mono_domain_assembly_open(s_rootDomain, nativeAssemblyPath.c_str());
-		if (!nativeWrappersAssembly)
-			FatalError("Could not load v2/" CITIZENFX_GAME_NATIVE "Impl.dll.\n");
+	std::string nativeAssemblyPath = platformFolder + CITIZENFX_GAME_NATIVE "Impl.dll";
+auto nativeWrappersAssembly = mono_domain_assembly_open(s_rootDomain, nativeAssemblyPath.c_str());
+if (!nativeWrappersAssembly)
+	FatalError("Could not load v2/" CITIZENFX_GAME_NATIVE "Impl.dll.\n");
 
-		AddAssemblyOverride(CITIZENFX_GAME_NATIVE "Impl", nativeWrappersAssembly, { 2, 0, 0, 0 }, MonoComponentHost::AssemblyOverrideRule::MAJOR_VERSION_EQUAL);
-	}
+AddAssemblyOverride(CITIZENFX_GAME_NATIVE "Impl", nativeWrappersAssembly, { 2, 0, 0, 0 }, MonoComponentHost::AssemblyOverrideRule::MAJOR_VERSION_EQUAL);
+}
 
-	// native wrappers
-	{
+// native wrappers
+{
 	std::string nativeAssemblyPath = platformFolder + "Native/" CITIZENFX_GAME_NATIVE ".dll";
-		auto nativeWrappersAssembly = mono_domain_assembly_open(s_rootDomain, nativeAssemblyPath.c_str());
-		if (!nativeWrappersAssembly)
-			FatalError("Could not load v2/Native/" CITIZENFX_GAME_NATIVE ".dll.\n");
+	auto nativeWrappersAssembly = mono_domain_assembly_open(s_rootDomain, nativeAssemblyPath.c_str());
+	if (!nativeWrappersAssembly)
+		FatalError("Could not load v2/Native/" CITIZENFX_GAME_NATIVE ".dll.\n");
 
-		MonoAssemblyName* name = mono_assembly_get_name(nativeWrappersAssembly);
-		std::array<uint16_t, 4> version;
-		version[0] = mono_assembly_name_get_version(name, &version[1], &version[2], &version[3]);
+	MonoAssemblyName* name = mono_assembly_get_name(nativeWrappersAssembly);
+	std::array<uint16_t, 4> version;
+	version[0] = mono_assembly_name_get_version(name, &version[1], &version[2], &version[3]);
 
-		AddAssemblyOverride(CITIZENFX_GAME_NATIVE, nativeWrappersAssembly, version, MonoComponentHost::AssemblyOverrideRule::FULL_VERSION_EQUAL);
+	AddAssemblyOverride(CITIZENFX_GAME_NATIVE, nativeWrappersAssembly, version, MonoComponentHost::AssemblyOverrideRule::FULL_VERSION_EQUAL);
 
-		// used for fallback natives
-		AddAssemblyOverride(CITIZENFX_GAME_NATIVE, nativeWrappersAssembly, { 2, 65535, 65535, 65535 }, MonoComponentHost::AssemblyOverrideRule::FULL_VERSION_EQUAL);
-	}
+	// used for fallback natives
+	AddAssemblyOverride(CITIZENFX_GAME_NATIVE, nativeWrappersAssembly, { 2, 65535, 65535, 65535 }, MonoComponentHost::AssemblyOverrideRule::FULL_VERSION_EQUAL);
+}
 #endif
 }
 
@@ -148,7 +147,7 @@ MonoAssembly* MonoComponentHost::AssemblyResolve(MonoAssemblyName* assemblyName,
 
 	MonoDomain* curDomain = mono_domain_get();
 
-	//trace("Searching for assembly: %s (%d.%d.%d.%d)\n", name, version[0], version[1], version[2], version[3]);
+	// trace("Searching for assembly: %s (%d.%d.%d.%d)\n", name, version[0], version[1], version[2], version[3]);
 
 	// only checking major version 2 assemblies and "CitizenFX.*" names for an early out, until more are required
 	if (version[0] == uint16_t(2u) && strncmp(name, "CitizenFX.", 10) == 0)
@@ -213,32 +212,23 @@ MonoAssembly* MonoComponentHost::LoadAssemblyDirect(std::string_view path)
 
 void MonoComponentHost::InvokeNative(NativeHandler native, ScriptContext* context, uint64_t hash)
 {
-	try
-	{
 #ifdef IS_FXSERVER
-		(*native)(*context);
+	(*native)(*context);
 #else
-		native(context);
+	native(context);
 #endif
-	}
-	catch (const std::exception& e)
-	{
-		std::string error = fmt::sprintf("Error executing native 0x%016llx at address %p, exception: %s", hash, (void*)native, e.what());
-		mono_raise_exception(mono_get_exception_invalid_operation(error.c_str()));
-	}
 }
 
 uintptr_t MonoComponentHost::GetNative(uint64_t hash)
 {
 #ifdef IS_FXSERVER
 	auto* native = fx::ScriptEngine::GetNativeHandlerPtr(hash);
-	if (native != nullptr)
-		return reinterpret_cast<uintptr_t>(native);
-
-	std::string error = fmt::sprintf("Error acquiring native 0x%016llx, no such native found", hash);
-	mono_raise_exception(mono_get_exception_invalid_operation(error.c_str()));
-
-	return 0;
+	if (native == nullptr)
+	{
+		fx::ScriptTrace("Error acquiring native 0x%016llx, no such native found\n", hash);
+		return 0;
+	}
+	return reinterpret_cast<uintptr_t>(native);
 #else
 	return reinterpret_cast<uintptr_t>(rage::scrEngine::GetNativeHandler(hash));
 #endif
@@ -246,7 +236,7 @@ uintptr_t MonoComponentHost::GetNative(uint64_t hash)
 
 void MonoComponentHost::EnsureThreadAttached()
 {
-	struct MonoAttachment
+	static thread_local struct MonoAttachment
 	{
 		MonoThread* thread;
 
@@ -267,7 +257,7 @@ void MonoComponentHost::EnsureThreadAttached()
 				thread = nullptr;
 			}
 		}
-	};
+	} attachment;
 
 	if (MonoComponentHost::s_rootDomain)
 	{
@@ -276,7 +266,7 @@ void MonoComponentHost::EnsureThreadAttached()
 }
 }
 
-static InitFunction initFunction([] ()
+static InitFunction initFunction([]()
 {
 	fx::ResourceManager::OnInitializeInstance.Connect([](fx::ResourceManager* instance)
 	{

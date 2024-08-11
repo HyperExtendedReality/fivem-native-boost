@@ -22,19 +22,19 @@
 #include <mono/metadata/exception.h>
 
 /*
-* Notes while working on this environment:
-*  - Scheduling: any function that can potentially add tasks to the C#'s scheduler needs to return the time
-*    of when it needs to be activated again, which then needs to be scheduled in the core scheduler (bookmark).
-*
-*
-* Some notes on mono domain switching (psuedo code):
-* 
-* mono_domain_set(MonoDomain* domain, bool force)  => if (!is_unloading(domain)) mono_domain_set_internal(domain);
-* mono_domain_set_internal(MonoDomain* domain)     => if (domain != mono_domain_current()) code_to_set_domain(domain);
-* 
-* So we use mono_domain_set_internal() directly, as we control when it'll unload ourselves.
-* We also don't need to do domain != current_domain checks as it's already included in mono_domain_set_internal().
-*/
+ * Notes while working on this environment:
+ *  - Scheduling: any function that can potentially add tasks to the C#'s scheduler needs to return the time
+ *    of when it needs to be activated again, which then needs to be scheduled in the core scheduler (bookmark).
+ *
+ *
+ * Some notes on mono domain switching (psuedo code):
+ *
+ * mono_domain_set(MonoDomain* domain, bool force)  => if (!is_unloading(domain)) mono_domain_set_internal(domain);
+ * mono_domain_set_internal(MonoDomain* domain)     => if (domain != mono_domain_current()) code_to_set_domain(domain);
+ *
+ * So we use mono_domain_set_internal() directly, as we control when it'll unload ourselves.
+ * We also don't need to do domain != current_domain checks as it's already included in mono_domain_set_internal().
+ */
 
 using namespace std::literals; // enable ""sv literals
 
@@ -186,7 +186,7 @@ result_t MonoScriptRuntime::Tick()
 		}
 
 		// We can ignore the time between the load above and the store below as the runtime will set this value again if there's still work to do
-		m_sharedData.m_scheduledTime.store(~uint64_t(0));
+		m_sharedData.m_scheduledTime.store(~uint64_t(0), std::memory_order_relaxed);
 	}
 
 	m_handler->PushRuntime(static_cast<IScriptRuntime*>(this));
@@ -220,8 +220,8 @@ result_t MonoScriptRuntime::TriggerEvent(char* eventName, char* argsSerialized, 
 
 	MonoException* exc = nullptr;
 	m_triggerEvent(mono_string_new(m_appDomain, eventName),
-		argsSerialized, serializedSize, mono_string_new(m_appDomain, sourceId),
-		GetCurrentSchedulerTime(), IsProfiling(), &exc);
+	argsSerialized, serializedSize, mono_string_new(m_appDomain, sourceId),
+	GetCurrentSchedulerTime(), IsProfiling(), &exc);
 
 	MONO_BOUNDARY_END
 
@@ -269,7 +269,7 @@ int MonoScriptRuntime::HandlesFile(char* filename, IScriptHostWithResourceData* 
 	// Allowed values for mono_rt2
 	constexpr std::string_view allowedValues[] = {
 		// put latest on top, right here ↓
-	    "Prerelease expiring 2024-12-31. See https://aka.cfx.re/mono-rt2-preview for info."sv,
+		"Prerelease expiring 2024-12-31. See https://aka.cfx.re/mono-rt2-preview for info."sv,
 		"Prerelease expiring 2024-06-30. See https://aka.cfx.re/mono-rt2-preview for info."sv,
 		"Prerelease expiring 2024-03-31. See https://aka.cfx.re/mono-rt2-preview for info."sv,
 		"Prerelease expiring 2023-12-31. See https://aka.cfx.re/mono-rt2-preview for info."sv,
@@ -281,8 +281,8 @@ int MonoScriptRuntime::HandlesFile(char* filename, IScriptHostWithResourceData* 
 	tm maxDate;
 	memset(&maxDate, 0, sizeof(maxDate));
 	maxDate.tm_year = maxYear - 1900; // YYYY - 1900 (starts from 1900)
-	maxDate.tm_mon = maxMonth - 1;    // 0 .. 11
-	maxDate.tm_mday = maxDay;         // 1 .. 31
+	maxDate.tm_mon = maxMonth - 1; // 0 .. 11
+	maxDate.tm_mday = maxDay; // 1 .. 31
 
 	std::time_t currentTime = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 	std::time_t endTime = mktime(&maxDate) + std::time_t(24 * 60 * 60); // until the end of the day
@@ -290,7 +290,7 @@ int MonoScriptRuntime::HandlesFile(char* filename, IScriptHostWithResourceData* 
 	if (currentTime > endTime)
 	{
 		console::PrintError(_CFX_NAME_STRING(_CFX_COMPONENT_NAME), "mono_rt2 is no longer supported since (%04d-%02d-%02d), skipped loading %s.\n",
-			maxYear, maxMonth, maxDay, filename);
+		maxYear, maxMonth, maxDay, filename);
 
 		return false;
 	}
@@ -314,8 +314,9 @@ int MonoScriptRuntime::HandlesFile(char* filename, IScriptHostWithResourceData* 
 	}
 
 	console::PrintError(_CFX_NAME_STRING(_CFX_COMPONENT_NAME), "mono_rt2 was requested for file %s but the value is missing or not accepted.\n"
-		"\tTo continue using mono_rt2 please update your fxmanifest to:\n"
-		"\tmono_rt2 '%s'\n", filename, allowedValues[0]);
+															   "\tTo continue using mono_rt2 please update your fxmanifest to:\n"
+															   "\tmono_rt2 '%s'\n",
+	filename, allowedValues[0]);
 
 	return false;
 }
@@ -331,10 +332,11 @@ result_t MonoScriptRuntime::LoadFile(char* scriptFile)
 
 	MonoException* exc = nullptr;
 	m_loadAssembly({ mono_string_new(m_appDomain, scriptFile), &currentTime, &isProfiling }, &exc);
-	
+
 	console::PrintWarning(_CFX_NAME_STRING(_CFX_COMPONENT_NAME),
-		"Assembly %s has been loaded into the mono rt2 runtime. This runtime is still in beta and shouldn't be used in production, "
-		"crashes and breaking changes are to be expected.\n", scriptFile);
+	"Assembly %s has been loaded into the mono rt2 runtime. This runtime is still in beta and shouldn't be used in production, "
+	"crashes and breaking changes are to be expected.\n",
+	scriptFile);
 
 	return ReturnOrError(exc);
 }
@@ -353,10 +355,7 @@ result_t MonoScriptRuntime::CallRef(int32_t refIndex, char* argsSerialized, uint
 
 	if (retval)
 	{
-		char* retvalStart = mono_array_addr(retval, char, 0);
-		uintptr_t retvalLength = mono_array_length(retval);
-
-		auto rvb = fx::MemoryScriptBuffer::Make(retvalStart, retvalLength);
+		auto rvb = fx::MemoryScriptBuffer::Make(mono_array_addr(retval, char, 0), mono_array_length(retval));
 		rvb.CopyTo(buffer);
 	}
 
@@ -482,14 +481,13 @@ result_t MonoScriptRuntime::ShutdownFxProfiler()
 bool MonoScriptRuntime::ReadAssembly(MonoString* name, MonoArray** assembly, MonoArray** symbols) const
 {
 	// no need for high performance.
-	std::string assemblyName = UTF8CString(name); // UTF8CString will free the intermediate utf8 c string for us
+	std::string assemblyName = std::move(UTF8CString(name));
 
-	if (memcmp(assemblyName.data() + assemblyName.size() - 4, ".dll", 4) != 0)
+	if (assemblyName.size() < 4 || assemblyName.compare(assemblyName.size() - 4, 4, ".dll") != 0)
 		assemblyName += ".dll";
 
 	fx::OMPtr<fxIStream> stream;
-	result_t hr = m_scriptHost->OpenHostFile(const_cast<char*>(assemblyName.c_str()), stream.GetAddressOf()); // should've been const qualified
-
+	result_t hr = m_scriptHost->OpenHostFile(const_cast<char*>(assemblyName.c_str()), stream.GetAddressOf());
 	if (FX_SUCCEEDED(hr))
 	{
 		{
@@ -497,8 +495,11 @@ bool MonoScriptRuntime::ReadAssembly(MonoString* name, MonoArray** assembly, Mon
 			uint32_t read;
 
 			stream->GetLength(&length);
+			std::vector<char> assemblyData(length);
+			stream->Read(assemblyData.data(), length, &read);
 			*assembly = mono_array_new(m_appDomain, mono_get_byte_class(), length);
-			hr = stream->Read(mono_array_addr_with_size(*assembly, sizeof(char), 0), length, &read);
+			memcpy(mono_array_addr_with_size(*assembly, sizeof(char), 0), assemblyData.data(), length);
+
 
 			stream.ReleaseAndGetAddressOf();
 		}
@@ -532,7 +533,7 @@ bool MonoScriptRuntime::ReadAssembly(MonoString* name, MonoArray** assembly, Mon
 }
 
 // {C068E0AB-DD9C-48F2-A7F3-69E866D27F17} = v1
-//FX_DEFINE_GUID(CLSID_MonoScriptRuntime, 0xc068e0ab, 0xdd9c, 0x48f2, 0xa7, 0xf3, 0x69, 0xe8, 0x66, 0xd2, 0x7f, 0x17);
+// FX_DEFINE_GUID(CLSID_MonoScriptRuntime, 0xc068e0ab, 0xdd9c, 0x48f2, 0xa7, 0xf3, 0x69, 0xe8, 0x66, 0xd2, 0x7f, 0x17);
 
 // {74df7d09-db7d-4c05-9788-3f80c464e14e} = v2
 FX_DEFINE_GUID(CLSID_MonoScriptRuntime, 0x74df7d09, 0xdb7d, 0x4c05, 0x97, 0x88, 0x3f, 0x80, 0xc4, 0x64, 0xe1, 0x4e);
