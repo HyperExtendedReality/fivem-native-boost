@@ -21,39 +21,47 @@ struct CrossMappingEntry
 static std::unordered_map<uint64_t, uint64_t> g_mappingTable;
 static std::shared_ptr<DeferredInitializer> g_mappingInitializer;
 static std::unordered_map<uint64_t, const CrossMappingEntry*> g_unmappedTable;
+static std::unordered_map<uint64_t, uint64_t> g_fastMappingTable;
 
 namespace rage
 {
-	uint64_t MapNative(uint64_t inNative)
+uint64_t MapNative(uint64_t inNative)
+{
+	auto it = g_fastMappingTable.find(inNative);
+	if (it != g_fastMappingTable.end())
 	{
-		g_mappingInitializer->Wait();
-
-		// find the native, and return the original if not mapped (for custom natives and 'new' natives)
-		auto it = g_mappingTable.find(inNative);
-
-		if (it == g_mappingTable.end())
-		{
-			return inNative;
-		}
-
 		return it->second;
 	}
 
-	void ReviveNative(uint64_t inNative)
-	{
-		g_mappingInitializer->Wait();
+	g_mappingInitializer->Wait();
 
-		if (auto it = g_unmappedTable.find(inNative); it != g_unmappedTable.end())
+	auto mappedIt = g_mappingTable.find(inNative);
+	if (mappedIt == g_mappingTable.end())
+	{
+		return inNative;
+	}
+
+	uint64_t result = mappedIt->second;
+	g_fastMappingTable[inNative] = result;
+	return result;
+}
+
+void ReviveNative(uint64_t inNative)
+{
+	g_mappingInitializer->Wait();
+
+	if (auto it = g_unmappedTable.find(inNative); it != g_unmappedTable.end())
+	{
+		for (uint64_t hash : it->second->entries)
 		{
-			for (uint64_t hash : it->second->entries)
+			if (hash != 0 && hash != inNative)
 			{
-				if (hash != 0 && hash != inNative)
-				{
-					g_mappingTable.insert({ hash, inNative });
-				}
+				g_mappingTable.insert({ hash, inNative });
+				g_fastMappingTable[hash] = inNative;
 			}
 		}
 	}
+}
 }
 
 extern "C" DLL_EXPORT uint64_t MapNative(uint64_t inNative)
@@ -124,7 +132,7 @@ static void DoMapping()
 	}
 	else if (strncmp(buildString, "Dec  5 2018", 11) == 0)
 	{
-		versionIdx = 1604; 
+		versionIdx = 1604;
 	}
 	else if (strncmp(buildString, "Oct 14 2018", 11) == 0)
 	{
@@ -165,8 +173,7 @@ static void DoMapping()
 		FatalError("No native mapping information found for game executable built on %s.", buildString);
 	}
 
-	static const CrossMappingEntry crossMapping_universal[] =
-	{
+	static const CrossMappingEntry crossMapping_universal[] = {
 #include "CrossMapping_Universal.h"
 	};
 
@@ -192,31 +199,31 @@ static void DoMapping()
 		}
 	}
 
-	if (xbr::IsGameBuild<1604>())
+	if (Is1604())
 	{
 		assert(maxVersion == 19);
 	}
-	else if (xbr::IsGameBuild<2060>())
+	else if (Is2060())
 	{
 		assert(maxVersion == 22);
 	}
-	else if (xbr::IsGameBuild<2189>())
+	else if (Is2189())
 	{
 		assert(maxVersion == 23);
 	}
-	else if (xbr::IsGameBuild<2372>())
+	else if (Is2372())
 	{
 		assert(maxVersion == 24);
 	}
-	else if (xbr::IsGameBuild<2545>() || xbr::IsGameBuild<2612>() || xbr::IsGameBuild<2699>())
+	else if (Is2545() || Is2612() || Is2699())
 	{
 		assert(maxVersion == 25);
 	}
-	else if (xbr::IsGameBuild<2802>())
+	else if (Is2802())
 	{
 		assert(maxVersion == 26);
 	}
-	else if (xbr::IsGameBuildOrGreater<2944>())
+	else if (Is2944() || Is3095() || Is3258())
 	{
 		assert(maxVersion == 27);
 	}
@@ -227,6 +234,11 @@ static void DoMapping()
 
 	g_mappingInitializer = DeferredInitializer::Create([maxVersion]()
 	{
+		size_t crossMappingSize = sizeof(crossMapping_universal) / sizeof(CrossMappingEntry);
+		g_mappingTable.reserve(crossMappingSize * maxVersion);
+		g_fastMappingTable.reserve(crossMappingSize * maxVersion);
+		g_unmappedTable.reserve(crossMappingSize);
+
 		for (auto& nativeEntry : crossMapping_universal)
 		{
 			bool hasNative = nativeEntry.entries[maxVersion] != 0;
@@ -236,13 +248,12 @@ static void DoMapping()
 				{
 					if (hasNative)
 					{
-						g_mappingTable.insert({ hash, nativeEntry.entries[maxVersion] });
+						g_mappingTable[hash] = nativeEntry.entries[maxVersion];
+						g_fastMappingTable[hash] = nativeEntry.entries[maxVersion];
 					}
 					else
 					{
-						// Native was removed this version: add it to a separate table
-						// so it can potentially be revived by custom implementations.
-						g_unmappedTable.insert({ hash, &nativeEntry });
+						g_unmappedTable[hash] = &nativeEntry;
 					}
 				}
 			}
@@ -250,7 +261,7 @@ static void DoMapping()
 	});
 }
 
-static HookFunction hookFunction([] ()
+static HookFunction hookFunction([]()
 {
 	DoMapping();
 });

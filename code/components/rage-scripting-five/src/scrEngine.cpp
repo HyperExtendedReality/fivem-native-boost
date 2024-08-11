@@ -18,6 +18,10 @@
 #include <ICoreGameInit.h>
 
 #include <unordered_set>
+#include <array>
+#include <vector>
+#include <utility>
+
 
 extern void PointerArgumentSafety();
 extern bool storyMode;
@@ -27,7 +31,6 @@ extern bool storyMode;
 #else
 inline void HandlerFilter(void* handler)
 {
-
 }
 #endif
 
@@ -51,8 +54,10 @@ struct NativeRegistration_obf : public rage::sysUseAllocator
 private:
 	uint64_t nextRegistration1;
 	uint64_t nextRegistration2;
+
 public:
 	rage::scrEngine::NativeHandler handlers[7];
+
 private:
 	uint32_t numEntries1;
 	uint32_t numEntries2;
@@ -66,7 +71,7 @@ public:
 		auto v5 = reinterpret_cast<uintptr_t>(&nextRegistration1);
 		auto v12 = 2i64;
 		auto v13 = v5 ^ nextRegistration2;
-		auto v14 = (char *)&result - v5;
+		auto v14 = (char*)&result - v5;
 		do
 		{
 			*(DWORD*)&v14[v5] = v13 ^ *(DWORD*)v5;
@@ -99,11 +104,11 @@ public:
 		auto naddr = 16 * index + reinterpret_cast<uintptr_t>(&nextRegistration1) + 0x54;
 		auto v8 = 2i64;
 		uint64_t nResult;
-		auto v11 = (char *)&nResult - naddr;
+		auto v11 = (char*)&nResult - naddr;
 		auto v10 = naddr ^ *(DWORD*)(naddr + 8);
 		do
 		{
-			*(DWORD *)&v11[naddr] = v10 ^ *(DWORD*)(naddr);
+			*(DWORD*)&v11[naddr] = v10 ^ *(DWORD*)(naddr);
 			naddr += 4i64;
 			--v8;
 		} while (v8);
@@ -122,6 +127,9 @@ public:
 
 template<typename TReg>
 TReg** registrationTable;
+
+static std::array<rage::scrEngine::NativeHandler, 65536> g_nativeHandlerCache;
+static std::array<std::vector<std::pair<uint64_t, rage::scrEngine::NativeHandler>>, 256> g_nativeHandlers;
 
 static std::unordered_set<GtaThread*> g_ownedThreads;
 
@@ -168,11 +176,12 @@ struct hash<NativeHash>
 
 namespace rage
 {
-static std::unordered_map<NativeHash, scrEngine::NativeHandler> g_fastPathMap;
+
+// static std::unordered_map<uint64_t, scrEngine::NativeHandler> g_nativeHandlerCache;
 
 pgPtrCollection<GtaThread>* scrEngine::GetThreadCollection()
 {
-	//return reinterpret_cast<pgPtrCollection<GtaThread>*>(0x1983310);
+	// return reinterpret_cast<pgPtrCollection<GtaThread>*>(0x1983310);
 	return scrThreadCollection;
 }
 
@@ -181,7 +190,7 @@ pgPtrCollection<GtaThread>* scrEngine::GetThreadCollection()
 	g_hooksDLL->SetHookCallback(StringHash("scrInit"), hook);
 }*/
 
-//static scrThread*& scrActiveThread = *(scrThread**)0x1849AE0;
+// static scrThread*& scrActiveThread = *(scrThread**)0x1849AE0;
 
 scrThread* scrEngine::GetActiveThread()
 {
@@ -193,8 +202,8 @@ void scrEngine::SetActiveThread(scrThread* thread)
 	*reinterpret_cast<scrThread**>(hook::get_tls() + activeThreadTlsOffset) = thread;
 }
 
-//static uint32_t& scrThreadId = *(uint32_t*)0x1849ADC;
-//static uint32_t& scrThreadCount = *(uint32_t*)0x1849AF8;
+// static uint32_t& scrThreadId = *(uint32_t*)0x1849ADC;
+// static uint32_t& scrThreadCount = *(uint32_t*)0x1849AF8;
 
 static std::vector<std::function<void()>> g_onScriptInitQueue;
 
@@ -202,7 +211,7 @@ void scrEngine::CreateThread(GtaThread* thread)
 {
 	if (!IsScriptInited())
 	{
-		g_onScriptInitQueue.push_back([=]()
+		g_onScriptInitQueue.emplace_back([thread]()
 		{
 			CreateThread(thread);
 		});
@@ -211,63 +220,25 @@ void scrEngine::CreateThread(GtaThread* thread)
 
 	// get a free thread slot
 	auto collection = GetThreadCollection();
-	int slot = 0;
-
-	// first try finding the actual thread
-	for (auto& threadCheck : *collection)
+	auto slot = std::find_if(collection->begin(), collection->end(),
+	[](const auto& t)
 	{
-		if (threadCheck == thread)
-		{
-			break;
-		}
+		return t == nullptr || t->GetContext()->ThreadId == 0;
+	});
 
-		slot++;
-	}
-
-	if (slot == collection->count())
-	{
-		slot = 0;
-
-		for (auto& threadCheck : *collection)
-		{
-			auto context = threadCheck->GetContext();
-
-			if (context->ThreadId == 0)
-			{
-				break;
-			}
-
-			slot++;
-		}
-	}
-
-	// did we get a slot?
-	if (slot == collection->count())
+	if (slot == collection->end())
 	{
 		return;
 	}
 
-	{
-		auto context = thread->GetContext();
+	auto context = thread->GetContext();
+	context->ThreadId = (*scrThreadId)++;
+	thread->SetScriptName(va("scr_%d", (*scrThreadCount) + 1));
+	context->ScriptHash = (*scrThreadCount) + 1;
+	(*scrThreadCount)++;
 
-		if (*scrThreadId == 0)
-		{
-			(*scrThreadId)++;
-		}
-
-		context->ThreadId = *scrThreadId;
-
-		(*scrThreadId)++;
-
-		thread->SetScriptName(va("scr_%d", (*scrThreadCount) + 1));
-		context->ScriptHash = (*scrThreadCount) + 1;
-
-		(*scrThreadCount)++;
-
-		collection->set(slot, thread);
-
-		g_ownedThreads.insert(thread);
-	}
+	*slot = thread;
+	g_ownedThreads.insert(thread);
 }
 
 uint64_t MapNative(uint64_t inNative);
@@ -281,7 +252,7 @@ bool RegisterNativeOverride(uint64_t hash, scrEngine::NativeHandler handler)
 	uint64_t origHash = hash;
 
 	// remove cached fastpath native
-	g_fastPathMap.erase(NativeHash{ origHash });
+	g_nativeHandlerCache[NativeHash{ origHash }.GetHash() & 0xFFFF] = nullptr;
 
 	hash = MapNative(hash);
 
@@ -348,16 +319,15 @@ void RegisterNative(uint64_t hash, scrEngine::NativeHandler handler)
 	RegisterNativeDo<NativeRegistration_obf>(hash, handler);
 }
 
-static std::vector<std::pair<uint64_t, scrEngine::NativeHandler>> g_nativeHandlers;
-
 void scrEngine::RegisterNativeHandler(const char* nativeName, NativeHandler handler)
 {
-	g_nativeHandlers.push_back(std::make_pair(HashString(nativeName), handler));
+	RegisterNativeHandler(HashString(nativeName), handler);
 }
 
 void scrEngine::RegisterNativeHandler(uint64_t nativeIdentifier, NativeHandler handler)
 {
-	g_nativeHandlers.push_back(std::make_pair(nativeIdentifier, handler));
+	uint8_t index = nativeIdentifier & 0xFF;
+	g_nativeHandlers[index].emplace_back(nativeIdentifier, handler);
 }
 
 void scrEngine::ReviveNativeHandler(uint64_t nativeIdentifier, NativeHandler handler)
@@ -372,34 +342,37 @@ void scrEngine::ReviveNativeHandler(uint64_t nativeIdentifier, NativeHandler han
 	}
 }
 
-static InitFunction initFunction([] ()
+static InitFunction initFunction([]()
 {
-	scrEngine::OnScriptInit.Connect([] ()
+	scrEngine::OnScriptInit.Connect([]()
 	{
 		auto doReg = []()
 		{
-			for (auto& handler : g_nativeHandlers)
+			for (const auto& handlerList : g_nativeHandlers)
 			{
-				RegisterNative(handler.first, handler.second);
+				for (const auto& handler : handlerList)
+				{
+					RegisterNative(handler.first, handler.second);
+				}
 			}
-
-			// to prevent double registration resulting in a game error
-			g_nativeHandlers.clear();
+			for (auto& handlerList : g_nativeHandlers)
+			{
+				handlerList.clear();
+			}
 		};
 
 		doReg();
-
 		PointerArgumentSafety();
-		g_fastPathMap.clear();
+		std::fill(g_nativeHandlerCache.begin(), g_nativeHandlerCache.end(), nullptr);
 		doReg();
 
 		for (auto& entry : g_onScriptInitQueue)
 		{
 			entry();
 		}
-
 		g_onScriptInitQueue.clear();
-	}, 50000);
+	},
+	50000);
 });
 
 template<typename TReg>
@@ -419,10 +392,10 @@ scrEngine::NativeHandler GetNativeHandlerDo(uint64_t origHash, uint64_t hash)
 
 				if (handler)
 				{
-					#include "BlockedNatives.h"
+#include "BlockedNatives.h"
 				}
 
-				g_fastPathMap[NativeHash{ origHash }] = handler;
+				g_nativeHandlerCache[index] = handler;
 
 				break;
 			}
@@ -434,17 +407,30 @@ scrEngine::NativeHandler GetNativeHandlerDo(uint64_t origHash, uint64_t hash)
 
 scrEngine::NativeHandler GetNativeHandlerWrap(uint64_t origHash, uint64_t hash)
 {
-	return GetNativeHandlerDo<NativeRegistration_obf>(origHash, hash);
+	uint8_t index = hash & 0xFF;
+	for (const auto& pair : g_nativeHandlers[index])
+	{
+		if (pair.first == hash)
+		{
+			auto handler = pair.second;
+			HandlerFilter(&handler);
+			return handler;
+		}
+	}
+	return nullptr;
 }
 
 scrEngine::NativeHandler scrEngine::GetNativeHandler(uint64_t hash)
 {
-	if (auto it = g_fastPathMap.find(NativeHash{ hash }); it != g_fastPathMap.end() && it->second)
+	uint16_t index = hash & 0xFFFF;
+	if (auto cachedHandler = g_nativeHandlerCache[index])
 	{
-		return it->second;
+		return cachedHandler;
 	}
 
-	return GetNativeHandlerWrap(hash, MapNative(hash));
+	auto handler = GetNativeHandlerWrap(hash, MapNative(hash));
+	g_nativeHandlerCache[index] = handler;
+	return handler;
 }
 }
 
@@ -453,19 +439,14 @@ static int ReturnTrue()
 	return true;
 }
 
-static int(*g_origReturnTrue)(void* a1, void* a2);
+static int (*g_origReturnTrue)(void* a1, void* a2);
 
 static int ReturnTrueFromScript(void* a1, void* a2)
 {
-	if (Instance<ICoreGameInit>::Get()->HasVariable("storyMode"))
-	{
-		return g_origReturnTrue(a1, a2);
-	}
-
-	return true;
+	return !Instance<ICoreGameInit>::Get()->HasVariable("storyMode") || g_origReturnTrue(a1, a2);
 }
 
-static void(*g_CTheScripts__Shutdown)(void);
+static void (*g_CTheScripts__Shutdown)(void);
 
 static void CTheScripts__Shutdown()
 {
@@ -477,7 +458,7 @@ static void CTheScripts__Shutdown()
 	}
 }
 
-static int(*g_origNoScript)(void*, int);
+static int (*g_origNoScript)(void*, int);
 
 static int JustNoScript(GtaThread* thread, int a2)
 {
@@ -494,7 +475,7 @@ static int JustNoScript(GtaThread* thread, int a2)
 	return thread->GetContext()->State;
 }
 
-static void(*origStartupScript)();
+static void (*origStartupScript)();
 
 static void StartupScriptWrap()
 {
@@ -534,7 +515,7 @@ static InitFunction initFunction([]
 	}
 });
 
-static HookFunction hookFunction([] ()
+static HookFunction hookFunction([]()
 {
 	char* location = nullptr;
 
@@ -603,11 +584,11 @@ static HookFunction hookFunction([] ()
 
 		// temp: kill stock scripts
 		// NOTE: before removing make sure scrObfuscation in fivem-private can handle opcode 0x2C (NATIVE)
-		//hook::jump(hook::pattern("48 83 EC 20 80 B9 ? 01 00 00 00 8B FA").count(1).get(0).get<void>(-0xB), JustNoScript);
+		// hook::jump(hook::pattern("48 83 EC 20 80 B9 ? 01 00 00 00 8B FA").count(1).get(0).get<void>(-0xB), JustNoScript);
 		MH_CreateHook(hook::pattern("48 83 EC 20 80 B9 ? 01 00 00 00 8B FA").count(1).get(0).get<void>(-0xB), JustNoScript, (void**)&g_origNoScript);
 
 		// make all CGameScriptId instances return 'true' in matching function (mainly used for 'is script allowed to use this object' checks)
-		//hook::jump(hook::pattern("74 3C 48 8B 01 FF 50 10 84 C0").count(1).get(0).get<void>(-0x1A), ReturnTrue);
+		// hook::jump(hook::pattern("74 3C 48 8B 01 FF 50 10 84 C0").count(1).get(0).get<void>(-0x1A), ReturnTrue);
 		if (xbr::IsGameBuildOrGreater<2802>())
 		{
 			MH_CreateHook(hook::pattern("74 41 48 8B 01 FF 50 10 84 C0").count(1).get(0).get<void>(-0x1A), ReturnTrueFromScript, (void**)&g_origReturnTrue);
@@ -618,8 +599,8 @@ static HookFunction hookFunction([] ()
 		}
 
 		// replace `startup` initialization with resetting all owned threads
-		//hook::jump(hook::get_pattern("48 63 18 83 FB FF 0F 84 D6", -0x34), ResetOwnedThreads);
-		//MH_CreateHook(hook::get_pattern("48 63 18 83 FB FF 0F 84 D6", -0x34), ResetOwnedThreads, (void**)&g_origResetOwnedThreads);
+		// hook::jump(hook::get_pattern("48 63 18 83 FB FF 0F 84 D6", -0x34), ResetOwnedThreads);
+		// MH_CreateHook(hook::get_pattern("48 63 18 83 FB FF 0F 84 D6", -0x34), ResetOwnedThreads, (void**)&g_origResetOwnedThreads);
 		if (xbr::IsGameBuildOrGreater<2802>())
 		{
 			MH_CreateHook(hook::get_pattern("48 8B 01 FF 50 30 E8 ? ? ? ? E8", -0x61), CTheScripts__Shutdown, (void**)&g_CTheScripts__Shutdown);
