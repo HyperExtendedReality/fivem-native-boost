@@ -21,6 +21,7 @@
 #include <CL2LaunchMode.h>
 
 #include <Error.h>
+#include <array>
 
 static LONG ShouldHandleUnwind(PEXCEPTION_POINTERS ep, DWORD exceptionCode, uint64_t identifier)
 {
@@ -55,18 +56,18 @@ static inline void CallHandler(const THandler& rageHandler, uint64_t nativeIdent
 	NativeHandlerLogging::CountNative(nativeIdentifier);
 #endif
 
-//#ifndef _DEBUG
+	// #ifndef _DEBUG
 	__try
 	{
-//#endif
+		// #endif
 		rageHandler(&rageContext);
-//#ifndef _DEBUG
+		// #ifndef _DEBUG
 	}
 	__except (exceptionAddress = (GetExceptionInformation())->ExceptionRecord->ExceptionAddress, ShouldHandleUnwind(GetExceptionInformation(), (GetExceptionInformation())->ExceptionRecord->ExceptionCode, nativeIdentifier))
 	{
 		throw std::exception(va("Error executing native 0x%016llx at address %s.", nativeIdentifier, FormatModuleAddress(exceptionAddress)));
 	}
-//#endif
+	// #endif
 }
 
 static std::string g_lastError;
@@ -132,210 +133,190 @@ extern "C" bool DLL_EXPORT WrapNativeInvoke(rage::scrEngine::NativeHandler handl
 	}
 }
 
-static std::unordered_map<uint64_t, fx::TNativeHandler> g_registeredHandlers;
-
 namespace fx
 {
-	boost::optional<TNativeHandler> ScriptEngine::GetNativeHandler(uint64_t nativeIdentifier)
+static std::array<TNativeHandler, 65536> g_registeredHandlers = {};
+boost::optional<TNativeHandler> ScriptEngine::GetNativeHandler(uint64_t nativeIdentifier)
+{
+	uint16_t index = nativeIdentifier & 0xFFFF;
+	if (g_registeredHandlers.at(index))
 	{
-		auto it = g_registeredHandlers.find(nativeIdentifier);
+		return g_registeredHandlers.at(index);
+	}
 
-		if (it != g_registeredHandlers.end())
+	if (launch::IsSDK())
+	{
+		return {};
+	}
+
+	auto rageHandler = rage::scrEngine::GetNativeHandler(nativeIdentifier);
+
+	if (rageHandler == nullptr)
+	{
+		return boost::optional<TNativeHandler>();
+	}
+
+	TNativeHandler handler = [=](ScriptContext& context)
+	{
+		NativeContextRaw rageContext(context.GetArgumentBuffer(), context.GetArgumentCount());
+		CallHandler(rageHandler, nativeIdentifier, rageContext);
+		rageContext.SetVectorResults();
+	};
+
+	g_registeredHandlers.at(index) = handler;
+	return handler;
+}
+
+static bool __declspec(safebuffers) CallNativeHandlerUniversal(uint64_t nativeIdentifier, ScriptContext& context);
+
+static bool (*g_callNativeHandler)(uint64_t nativeIdentifier, ScriptContext& context) = CallNativeHandlerUniversal;
+
+static bool __declspec(safebuffers) CallNativeHandlerSdk(uint64_t nativeIdentifier, ScriptContext& context)
+{
+	auto handler = ScriptEngine::GetNativeHandler(nativeIdentifier);
+	if (handler)
+	{
+		(*handler)(context);
+		return true;
+	}
+	return false;
+}
+
+static bool __declspec(safebuffers) CallNativeHandlerRage(uint64_t nativeIdentifier, ScriptContext& context)
+{
+	auto rageHandler = rage::scrEngine::GetNativeHandler(nativeIdentifier);
+
+	if (rageHandler)
+	{
+		// push arguments from the original context
+		NativeContextRaw rageContext(context.GetArgumentBuffer(), context.GetArgumentCount());
+
+		CallHandler(rageHandler, nativeIdentifier, rageContext);
+
+		// append vector3 result components
+		rageContext.SetVectorResults();
+
+		return true;
+	}
+
+	return false;
+}
+
+static bool __declspec(safebuffers) CallNativeHandlerUniversal(uint64_t nativeIdentifier, ScriptContext& context)
+{
+	if (launch::IsSDK())
+	{
+		g_callNativeHandler = CallNativeHandlerSdk;
+	}
+	else
+	{
+		g_callNativeHandler = CallNativeHandlerRage;
+	}
+
+	return g_callNativeHandler(nativeIdentifier, context);
+}
+
+bool __declspec(safebuffers) ScriptEngine::CallNativeHandler(uint64_t nativeIdentifier, ScriptContext& context)
+{
+	return g_callNativeHandler(nativeIdentifier, context);
+}
+
+void ScriptEngine::RegisterNativeHandler(const std::string& nativeName, TNativeHandler function)
+{
+	RegisterNativeHandler(HashString(nativeName.c_str()), function);
+}
+
+void ScriptEngine::RegisterNativeHandler(uint64_t nativeIdentifier, TNativeHandler function)
+{
+	uint16_t index = nativeIdentifier & 0xFFFF;
+	g_registeredHandlers.at(index) = function;
+
+	if (!launch::IsSDK())
+	{
+#ifdef _M_AMD64
+		TNativeHandler* handler = new TNativeHandler(function);
+
+		struct StubGenerator : public jitasm::Frontend
 		{
-			return it->second;
-		}
+			typedef void (*TFunction)(void*, rage::scrNativeCallContext*);
 
-		if (launch::IsSDK())
-		{
-			return {};
-		}
+		private:
+			void* m_handlerData;
 
-		auto rageHandler = rage::scrEngine::GetNativeHandler(nativeIdentifier);
+			TFunction m_function;
 
-		if (rageHandler == nullptr)
-		{
-			return boost::optional<TNativeHandler>();
-		}
-
-		return boost::optional<TNativeHandler>([=] (ScriptContext& context)
-		{
-/*#if USE_OPTICK
-			static std::unordered_map<uint64_t, Optick::EventDescription*> staticDescriptions;
-
-			auto it = staticDescriptions.find(nativeIdentifier);
-
-			if (it == staticDescriptions.end())
+		public:
+			StubGenerator(void* handlerData, TFunction function)
+				: m_handlerData(handlerData), m_function(function)
 			{
-				it = staticDescriptions.emplace(nativeIdentifier, Optick::EventDescription::Create(va("NativeHandler %llx", nativeIdentifier), __FILE__, __LINE__, Optick::Color::Azure)).first;
 			}
 
-			Optick::Event ev(*it->second);
-#endif*/
-
-			// push arguments from the original context
-			NativeContextRaw rageContext(context.GetArgumentBuffer(), context.GetArgumentCount());
-
-			CallHandler(rageHandler, nativeIdentifier, rageContext);
-
-			// append vector3 result components
-			rageContext.SetVectorResults();
-		});
-	}
-
-	static bool __declspec(safebuffers) CallNativeHandlerUniversal(uint64_t nativeIdentifier, ScriptContext& context);
-
-	static bool (*g_callNativeHandler)(uint64_t nativeIdentifier, ScriptContext& context) = CallNativeHandlerUniversal;
-
-	static bool __declspec(safebuffers) CallNativeHandlerSdk(uint64_t nativeIdentifier, ScriptContext& context)
-	{
-		auto h = ScriptEngine::GetNativeHandler(nativeIdentifier);
-
-		if (h)
-		{
-			(*h)(context);
-
-			return true;
-		}
-
-		return false;
-	}
-
-	static bool __declspec(safebuffers) CallNativeHandlerRage(uint64_t nativeIdentifier, ScriptContext& context)
-	{
-		auto rageHandler = rage::scrEngine::GetNativeHandler(nativeIdentifier);
-
-		if (rageHandler)
-		{
-			// push arguments from the original context
-			NativeContextRaw rageContext(context.GetArgumentBuffer(), context.GetArgumentCount());
-
-			CallHandler(rageHandler, nativeIdentifier, rageContext);
-
-			// append vector3 result components
-			rageContext.SetVectorResults();
-
-			return true;
-		}
-
-		return false;
-	}
-
-	static bool __declspec(safebuffers) CallNativeHandlerUniversal(uint64_t nativeIdentifier, ScriptContext& context)
-	{
-		if (launch::IsSDK())
-		{
-			g_callNativeHandler = CallNativeHandlerSdk;
-		}
-		else
-		{
-			g_callNativeHandler = CallNativeHandlerRage;
-		}
-
-		return g_callNativeHandler(nativeIdentifier, context);
-	}
-
-	bool __declspec(safebuffers) ScriptEngine::CallNativeHandler(uint64_t nativeIdentifier, ScriptContext& context)
-	{
-		return g_callNativeHandler(nativeIdentifier, context);
-	}
-
-	void ScriptEngine::RegisterNativeHandler(const std::string& nativeName, TNativeHandler function)
-	{
-		RegisterNativeHandler(HashString(nativeName.c_str()), function);
-	}
-
-	void ScriptEngine::RegisterNativeHandler(uint64_t nativeIdentifier, TNativeHandler function)
-	{
-		g_registeredHandlers[nativeIdentifier] = function;
-
-		if (!launch::IsSDK())
-		{
-#ifdef _M_AMD64
-			TNativeHandler* handler = new TNativeHandler(function);
-
-			struct StubGenerator : public jitasm::Frontend
+			virtual void InternalMain() override
 			{
-				typedef void (*TFunction)(void*, rage::scrNativeCallContext*);
+				mov(rdx, rcx);
+				mov(rcx, reinterpret_cast<uintptr_t>(m_handlerData));
 
-			private:
-				void* m_handlerData;
+				mov(rax, reinterpret_cast<uintptr_t>(m_function));
 
-				TFunction m_function;
+				jmp(rax);
+			}
+		};
 
-			public:
-				StubGenerator(void* handlerData, TFunction function)
-					: m_handlerData(handlerData), m_function(function)
-				{
-				}
+		static auto stubFunction = [](void* handlerData, rage::scrNativeCallContext* context)
+		{
+			TNativeHandler* handler = reinterpret_cast<TNativeHandler*>(handlerData);
+			ScriptContextRaw cfxContext(context->GetArgumentBuffer(), context->GetArgumentCount());
+			(*handler)(cfxContext);
+		};
 
-				virtual void InternalMain() override
-				{
-					mov(rdx, rcx);
-					mov(rcx, reinterpret_cast<uintptr_t>(m_handlerData));
+		auto callStub = new StubGenerator(handler, stubFunction);
 
-					mov(rax, reinterpret_cast<uintptr_t>(m_function));
-
-					jmp(rax);
-				}
-			}* callStub = new StubGenerator(handler, [](void* handlerData, rage::scrNativeCallContext* context)
-			{
-				// get the handler
-				TNativeHandler* handler = reinterpret_cast<TNativeHandler*>(handlerData);
-
-				// turn into a native context
-				ScriptContextRaw cfxContext(context->GetArgumentBuffer(), context->GetArgumentCount());
-
-				// call the native
-				(*handler)(cfxContext);
-			});
-
-			rage::scrEngine::RegisterNativeHandler(nativeIdentifier, reinterpret_cast<rage::scrEngine::NativeHandler>(callStub->GetCode()));
+		rage::scrEngine::RegisterNativeHandler(nativeIdentifier, reinterpret_cast<rage::scrEngine::NativeHandler>(callStub->GetCode()));
 #elif defined(_M_IX86)
-			TNativeHandler* handler = new TNativeHandler(function);
+		TNativeHandler* handler = new TNativeHandler(function);
 
-			struct StubGenerator : public jitasm::Frontend
+		struct StubGenerator : public jitasm::Frontend
+		{
+			typedef void (*TFunction)(void*, rage::scrNativeCallContext*);
+
+		private:
+			void* m_handlerData;
+
+			TFunction m_function;
+
+		public:
+			StubGenerator(void* handlerData, TFunction function)
+				: m_handlerData(handlerData), m_function(function)
 			{
-				typedef void(*TFunction)(void*, rage::scrNativeCallContext*);
+			}
 
-			private:
-				void* m_handlerData;
-
-				TFunction m_function;
-
-			public:
-				StubGenerator(void* handlerData, TFunction function)
-					: m_handlerData(handlerData), m_function(function)
-				{
-
-				}
-
-				virtual void InternalMain() override
-				{
-					push(dword_ptr[esp + 4]);
-					push(reinterpret_cast<uintptr_t>(m_handlerData));
-					
-					mov(eax, reinterpret_cast<uintptr_t>(m_function));
-					call(eax);
-
-					add(esp, 8);
-					ret();
-				}
-			}*callStub = new StubGenerator(handler, [](void* handlerData, rage::scrNativeCallContext* context)
+			virtual void InternalMain() override
 			{
-				// get the handler
-				TNativeHandler* handler = reinterpret_cast<TNativeHandler*>(handlerData);
+				push(dword_ptr[esp + 4]);
+				push(reinterpret_cast<uintptr_t>(m_handlerData));
 
-				// turn into a native context
-				ScriptContextRaw cfxContext(context->GetArgumentBuffer(), context->GetArgumentCount());
+				mov(eax, reinterpret_cast<uintptr_t>(m_function));
+				call(eax);
 
-				// call the native
-				(*handler)(cfxContext);
-			});
+				add(esp, 8);
+				ret();
+			}
+		}* callStub = new StubGenerator(handler, [](void* handlerData, rage::scrNativeCallContext* context)
+		{
+			// get the handler
+			TNativeHandler* handler = reinterpret_cast<TNativeHandler*>(handlerData);
 
-			rage::scrEngine::RegisterNativeHandler(nativeIdentifier, reinterpret_cast<rage::scrEngine::NativeHandler>(callStub->GetCode()));
+			// turn into a native context
+			ScriptContextRaw cfxContext(context->GetArgumentBuffer(), context->GetArgumentCount());
+
+			// call the native
+			(*handler)(cfxContext);
+		});
+
+		rage::scrEngine::RegisterNativeHandler(nativeIdentifier, reinterpret_cast<rage::scrEngine::NativeHandler>(callStub->GetCode()));
 #else
 #error No stub generator for this architecture.
 #endif
-		}
 	}
+}
 }
